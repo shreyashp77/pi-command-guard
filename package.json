@@ -1,0 +1,13 @@
+{
+  "name": "pi-command-guard",
+  "version": "1.0.0",
+  "description": "A pi extension that intercepts potentially dangerous bash commands and prompts for confirmation before execution",
+  "keywords": ["pi-package", "extension", "security", "bash", "command-guard"],
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

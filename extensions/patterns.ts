@@ -1,6 +1,10 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve the directory containing this extension file, regardless of install location
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -123,9 +127,9 @@ function stringToRegex(s: string): RegExp {
 }
 
 // ─── Config file path ────────────────────────────────────────────────────────
-
-const CONFIG_DIR = join(homedir(), ".pi", "agent", "extensions", "command-guard");
-const CONFIG_PATH = join(CONFIG_DIR, "rules.json");
+// Look for rules.json next to this extension file (works for both local and installed packages)
+const CONFIG_PATH = join(__dirname, "rules.json");
+const CONFIG_DIR = __dirname;
 
 interface ConfigFile {
   /** Extra rules to add (merged with defaults) */

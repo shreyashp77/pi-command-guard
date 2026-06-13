@@ -13,18 +13,17 @@ A global [pi](https://pi.dev) extension that intercepts potentially dangerous ba
 
 ## Installation
 
-The extension is auto-discovered by pi. Place it in your global extensions directory:
+### Via pi install (recommended)
 
-```
-~/.pi/agent/extensions/command-guard/
-├── index.ts          # Main extension entry point
-├── patterns.ts       # Detection rules and pattern matching
-├── ui.ts             # Custom TUI dialog component
-├── rules.json        # User-customizable rule configuration
-└── README.md
+```bash
+pi install git:github.com/shreyashp77/pi-command-guard
 ```
 
-If it's not already there, copy the extension:
+Then restart pi or run `/reload`.
+
+### Manual
+
+Clone the repo into your global extensions directory:
 
 ```bash
 git clone git@github.com:shreyashp77/pi-command-guard.git ~/.pi/agent/extensions/command-guard
