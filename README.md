@@ -13,7 +13,7 @@ A global [pi](https://pi.dev) extension that intercepts potentially dangerous ba
 
 ## Installation
 
-### Via pi install (recommended)
+### Quick install (recommended)
 
 ```bash
 pi install git:github.com/shreyashp77/pi-command-guard
@@ -21,7 +21,7 @@ pi install git:github.com/shreyashp77/pi-command-guard
 
 Then restart pi or run `/reload`.
 
-### Manual
+### Manual install
 
 Clone the repo into your global extensions directory:
 
@@ -30,6 +30,10 @@ git clone git@github.com:shreyashp77/pi-command-guard.git ~/.pi/agent/extensions
 ```
 
 Then restart pi or run `/reload`.
+
+### Verify installation
+
+After installing, you should see the extension loaded in pi's logs. Test it by asking the LLM to run a command like `rm -rf node_modules` — the guard dialog should appear with three options: **Allow**, **Block**, or **Custom Instructions**.
 
 ## How It Works
 
