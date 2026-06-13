@@ -16,6 +16,14 @@ A global [pi](https://pi.dev) extension that intercepts potentially dangerous ba
 ### Quick install (recommended)
 
 ```bash
+pi install npm:pi-command-guard
+```
+
+Then restart pi or run `/reload`.
+
+### Install from GitHub
+
+```bash
 pi install git:github.com/shreyashp77/pi-command-guard
 ```
 
