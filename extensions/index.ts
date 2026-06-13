@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isToolCallEventType, matchCommand } from "./patterns";
+import { isToolCallEventType, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
+import { matchCommand } from "./patterns";
 import { createGuardDialog, type GuardDialogResult } from "./ui";
 
 export default function (pi: ExtensionAPI) {
