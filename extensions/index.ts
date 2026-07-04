@@ -1,6 +1,6 @@
 import { isToolCallEventType, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { matchCommand } from "./patterns";
-import { createGuardDialog, type GuardDialogResult } from "./ui";
+import { createGuardDialog, createInputDialog, type GuardDialogResult } from "./ui";
 
 export default function (pi: ExtensionAPI) {
   // ─── Session-local decision cache ─────────────────────────────────────────
@@ -68,10 +68,13 @@ export default function (pi: ExtensionAPI) {
 
       case "custom": {
         // Show input dialog for custom instructions
-        const customText = await ctx.ui.input(
-          "What do you want to do instead?",
-          "",
-        );
+        const customText = await new Promise<string | null>((resolve) => {
+          ctx.ui.custom(
+            createInputDialog("Custom Instructions", ""),
+          ).then((result: string | null) => {
+            resolve(result);
+          });
+        });
 
         if (customText && customText.trim().length > 0) {
           // Inject context message so the LLM can suggest a safer alternative

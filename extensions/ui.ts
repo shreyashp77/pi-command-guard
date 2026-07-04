@@ -97,3 +97,73 @@ export function createGuardDialog(
     };
   };
 }
+
+// ─── Simple Text Input Dialog ────────────────────────────────────────────────
+
+export function createInputDialog(
+  title: string,
+  defaultValue: string,
+): (tui: any, theme: any, _kb: any, done: (result: string | null) => void) => any {
+  return (_tui, theme, _kb, done) => {
+    let text = defaultValue;
+
+    const container = new Container();
+
+    // Top border
+    container.addChild(
+      new DynamicBorder((s: string) => theme.fg("accent", s)),
+    );
+
+    // Title
+    container.addChild(
+      new Text(theme.fg("accent", theme.bold(title)), 1, 0),
+    );
+
+    // Spacer
+    container.addChild(new Text("", 0, 0));
+
+    // Input line: label + text field
+    const inputText = new Text(
+      theme.fg("text", "Enter instructions: ") + theme.fg("toolOutput", text),
+      1, 0,
+    );
+    container.addChild(inputText);
+
+    // Spacer
+    container.addChild(new Text("", 0, 0));
+
+    // Help text
+    container.addChild(
+      new Text(theme.fg("dim", "Type your instructions  •  enter to confirm  •  esc to cancel"), 1, 0),
+    );
+
+    // Bottom border
+    container.addChild(new DynamicBorder((s: string) => theme.fg("borderMuted", s)));
+
+    return {
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => {
+        if (data === "\r" || data === "\n") {
+          // Enter pressed — submit
+          done(text.trim().length > 0 ? text.trim() : null);
+        } else if (data === "\x1b" || data === "\x04") {
+          // Escape or Ctrl+D — cancel
+          done(null);
+        } else if (data === "\b" || data === "\x7f") {
+          // Backspace
+          text = text.slice(0, -1);
+          inputText.content =
+            theme.fg("text", "Enter instructions: ") + theme.fg("toolOutput", text);
+          _tui.requestRender();
+        } else if (data.length === 1) {
+          // Regular character
+          text += data;
+          inputText.content =
+            theme.fg("text", "Enter instructions: ") + theme.fg("toolOutput", text);
+          _tui.requestRender();
+        }
+      },
+    };
+  };
+}
