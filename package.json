@@ -1,6 +1,6 @@
 {
   "name": "pi-command-guard",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A pi extension that intercepts potentially dangerous bash commands and prompts for confirmation before execution",
   "keywords": [
     "pi-package",
