@@ -1,0 +1,4 @@
+# Files excluded from the npm tarball (git still tracks them).
+# plans/ holds the internal enhancement plan + verification logs, which is a
+# development artifact, not part of the published extension.
+plans/
