@@ -4,12 +4,16 @@ A global [pi](https://pi.dev) extension that intercepts potentially dangerous ba
 
 ## Features
 
-- **Intercept dangerous commands** — Detects 14 categories of risky shell operations before they run
-- **Three-way decision** — Allow, Block, or provide Custom Instructions for the LLM to suggest a safer alternative
-- **Session-aware caching** — If you allow a command once in a session, it won't prompt again for the same command
-- **Configurable rules** — Add, remove, or modify detection rules via a simple JSON config file
-- **Non-interactive safety** — Blocks by default when running in print/JSON mode (no UI available)
-- **Styled overlay dialog** — Clear explanation of why the command was flagged, displayed with syntax-highlighted command text
+- **Intercepts dangerous commands** — 23 built-in rules covering risky shell operations, checked before the command runs
+- **Argument-aware detection** — commands are parsed into segments and argv tokens, so `git push -f`, `rm -fr`, `find … -delete` and `xargs rm -rf` are caught while `echo "rm -rf /"` is not
+- **Five-way decision** — Allow once, allow a whole rule for the session, edit the command, block, or give Custom Instructions to the LLM
+- **Session-aware caching** — allowed commands and blocked commands are remembered per session, so the same command does not prompt again
+- **Non-interactive safety** — when no UI is available, any command that matches a rule is blocked rather than run
+- **Styled overlay dialog** — the flagged fragment is highlighted, with the rule label, severity and explanation
+- **Status line** — prompts, allows and blocks are tallied in pi's status line
+- **Configurable rules** — add, remove or modify rules through layered JSON config files, validated against a bundled JSON Schema
+- **`/guard` command** — inspect rules, dry-run a command against the ruleset, and edit config from the chat
+- **`--no-guard` flag** — disable the guard for a single pi run
 
 ## Installation
 
@@ -41,76 +45,138 @@ Then restart pi or run `/reload`.
 
 ### Verify installation
 
-After installing, you should see the extension loaded in pi's logs. Test it by asking the LLM to run a command like `rm -rf node_modules` — the guard dialog should appear with three options: **Allow**, **Block**, or **Custom Instructions**.
+Start pi and run a command you expect to be flagged (for example, ask the agent to run `rm -rf /tmp/some-scratch-dir`). The guard dialog should appear. You can also run `/guard status` — it should report the guard as enabled.
 
 ## How It Works
 
-When the LLM calls the `bash` tool with a command, the extension checks it against a set of dangerous command patterns:
+When the LLM calls the `bash` tool, the extension checks the command before it runs:
 
-1. **Detection** — Regex patterns match against the command string
-2. **Dialog** — A styled overlay appears with the command, rule label, and explanation
-3. **Decision** — Choose one of three options:
+1. **Parse** — the command string is split into segments on `&&`, `||`, `;`, `|` and newlines; quoted strings and comments are stripped; wrapper commands (`sudo`, `env`, `time`, `nice`, `nohup`, `stdbuf`, `xargs`, `parallel`) are unwrapped so the real command is inspected
+2. **Match** — each rule matches either on argv tokens (`command` + `flagsAllOf`/`flagsAnyOf`/`argAnyOf`) or on a regex over the segment text; the first matching rule wins, in rule order
+3. **Dialog** — a styled overlay shows the command with the flagged fragment highlighted, the rule label, severity and explanation
+4. **Decision** — choose one of five options:
 
 | Option | What happens |
 |--------|-------------|
-| **Allow** | The command runs as intended. Cached for the session. |
-| **Block** | The command is cancelled with a reason. |
-| **Custom Instructions** | You type what you actually want to do in natural language. The original command is blocked, and the LLM receives both the blocked command and your instructions, so it can suggest a safer alternative. |
+| **Allow — run this command** | The command runs. The exact command is cached for the rest of the session. |
+| **Allow this rule for the session** | Every command that matches this rule stops prompting for the rest of the session. |
+| **Edit — run a replacement** | You type a different command. The original is never run; the replacement is re-checked against the rules and only runs if it is clean. |
+| **Block — do not run** | The command is cancelled. The decision is cached, so the same command is silently blocked for the rest of the session. |
+| **Custom Instructions** | You describe what you actually want. The command stays blocked and the LLM receives the blocked command, the rule explanation and your instructions as a follow-up turn. |
+
+If you do not answer, the dialog counts down (120 seconds by default) and the command is **blocked** automatically. Cancelling the dialog with `esc` also blocks.
+
+### Non-interactive runs
+
+When pi has no UI (`print`/JSON mode), a command that matches a rule is blocked with a reason naming the rule. Commands that match no rule run normally. Pass `--no-guard` to skip the guard entirely for a run — that is the explicit, deliberate bypass.
 
 ## Built-in Rules
 
-| # | Rule | Patterns |
-|---|------|----------|
-| 1 | Recursive deletion | `rm -rf`, `rm -r`, `rm --recursive`, `rm --no-preserve-root` |
-| 2 | Privilege escalation | `sudo` |
-| 3 | Overly permissive permissions | `chmod 777`, `chmod 666`, `chmod 776`, `chown` with same |
-| 4 | Disk device operations | `dd` |
-| 5 | Filesystem creation | `mkfs`, `mkfs.ext4`, etc. |
-| 6 | Remote code execution via pipe | `curl \| bash`, `wget \| sh`, `curl \| sudo sh` |
-| 7 | Netcat reverse shell | `nc -e`, `nc -c` |
-| 8 | Writing to system directories | Writing to `/etc/`, `/boot/`, `/sbin/`, `/usr/sbin/`, `/bin/` |
-| 9 | Package manager global uninstall | `npm uninstall`, `pip uninstall`, `apt purge`, `brew autoremove`, etc. |
-| 10 | Dangerous git operations | `git push --force`, `git reset --hard`, `git push --force-with-lease` |
-| 11 | Emptying file contents | `truncate -s 0` |
-| 12 | Kill all processes | `kill -9`, `kill --kill` |
-| 13 | Swap formatting | `mkswap` |
-| 14 | Dangerous eval/source | `eval` or `source` with `curl`/`wget` |
+Rules are evaluated in this order; the first match wins.
+
+| # | Rule id | Severity | What it catches |
+|---|---------|----------|-----------------|
+| 1 | `recursive-deletion` | critical | `rm` with `-r`, `-rf`, `-fr`, `--recursive`, `--no-preserve-root` |
+| 2 | `privilege-escalation` | critical | `sudo`, `doas` |
+| 3 | `permissive-permissions` | high | `chmod`/`chown` with modes like `777`, `667` |
+| 4 | `disk-device-operations` | critical | `dd` |
+| 5 | `filesystem-creation` | critical | `mkfs`, `mkfs.ext4`, … |
+| 6 | `remote-exec-pipe` | critical | `curl … \| bash`, `wget … \| sh`, `curl … \| sudo sh` |
+| 7 | `netcat-exec` | critical | `nc -e`, `ncat -c` |
+| 8 | `system-dir-write` | high | `tee`, `dd`, `cp`, `mv`, `ln`, `install` writing into `/etc/`, `/boot/`, `/bin/`, `/usr/sbin/`, `/lib/`, `/sys/`, … |
+| 9 | `redirect-system-dir` | high | `> /etc/…`, `>> /usr/bin/…` output redirection into system directories |
+| 10 | `package-uninstall` | medium | `npm uninstall`, `pip remove`, `apt purge`, `brew autoremove`, … |
+| 11 | `git-force-push` | high | `git push -f`, `--force`, `--force-with-lease` |
+| 12 | `git-reset-hard` | high | `git reset --hard` |
+| 13 | `git-discard-checkout` | high | `git checkout -- <path>` |
+| 14 | `git-clean-force` | high | `git clean -f`, `-fd`, `-fdx` |
+| 15 | `truncate-empty` | high | `truncate -s 0 <file>` |
+| 16 | `kill-sigkill` | high | `kill -9`, `killall -KILL`, `pkill -SIGKILL` |
+| 17 | `mkswap` | critical | `mkswap` |
+| 18 | `eval-remote` | critical | `eval`/`source` combined with `curl`/`wget` |
+| 19 | `find-delete` | high | `find … -delete` |
+| 20 | `block-device-redirect` | critical | `> /dev/sda`, `/dev/nvme0n1`, … |
+| 21 | `fork-bomb` | critical | `:(){ :\|:& };:` |
+| 22 | `shutdown-system` | high | `shutdown`, `reboot`, `halt`, `poweroff`, `init` |
+| 23 | `history-clear` | medium | `history -c` |
+
+Severity is shown in the dialog and reported by `/guard list`; it does not change prompting policy yet.
 
 ## Configuration
 
-Edit `rules.json` to customize detection rules:
+Rules are configured by JSON files, read in this order (later layers override earlier ones):
+
+| Layer | Path | Use |
+|-------|------|-----|
+| user | `<agent dir>/command-guard/rules.json` (default `~/.pi/agent/command-guard/rules.json`) | your personal rules, applies in every project |
+| project | `<cwd>/.pi/command-guard/rules.json` | per-project overrides |
+| package | `extensions/rules.json` | the defaults shipped with this extension; `/guard` writes here |
+
+Arrays concatenate across layers; `updateRules` merge by rule id; scalar settings take the last layer that sets them.
 
 ```json
 {
   "addRules": [
     {
-      "label": "My custom rule",
-      "pattern": "/\\bmy-dangerous\\b/g",
-      "explanation": "This command does something risky."
+      "id": "no-debug-releases",
+      "label": "Deploying debug builds",
+      "severity": "high",
+      "explanation": "Deploying a debug build to production is risky.",
+      "match": {
+        "command": "^(deploy|rsync)$",
+        "argAnyOf": ["--debug"]
+      }
     }
   ],
-  "removeRules": [
-    "default-2"
-  ],
+  "removeRules": ["history-clear"],
   "updateRules": [
     {
-      "id": "default-0",
-      "pattern": "/\\brm\\s+-rf\\b/g",
-      "explanation": "Updated explanation for recursive deletion."
+      "id": "recursive-deletion",
+      "explanation": "Custom wording shown in the dialog."
     }
-  ]
+  ],
+  "enabled": true,
+  "dialogTimeoutMs": 120000,
+  "maxCommandLength": 20000
 }
 ```
 
 ### Rule IDs
 
-Default rules are auto-assigned IDs `default-0` through `default-13` (in order of definition). Custom rules get IDs like `custom-14`, `custom-15`, etc.
+Built-in rules have stable string ids (`recursive-deletion`, `git-force-push`, …). The legacy positional ids (`default-0` … `default-13`) are still accepted as aliases so old configs keep targeting the same rule. Custom rules get ids like `custom-23`, `custom-24`, … unless you give them an explicit `id`.
 
 ### Pattern Format
 
-Patterns can be specified as:
-- A regex string: `"\\brm\\s+-rf\\b"`
-- A regex literal: `"/\\brm\\s+-rf\\b/g"`
+A rule matches either by argv (`match`) or by regex (`pattern`). A pattern may be a regex string (`"\\brm\\s+-rf\\b"`) or regex-literal text (`"/\\brm\\s+-rf\\b/i"`); stateful flags (`g`, `y`) are ignored. Flags are matched as whole argv tokens, so `flagsAnyOf: ["^--?f(orce)?(-with-lease)?$"]` catches `-f`, `-rf` and `--force` without the false positives a `.*` span produces. `except` is a list of regexes: if any matches the segment, the rule does not fire.
+
+A pattern that does not compile is reported and **disabled** (it never matches) rather than silently matching everything.
+
+### Settings
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `enabled` | `true` | master switch; set `false` in the user or project layer to disable the guard |
+| `dialogTimeoutMs` | `120000` | countdown before the dialog auto-blocks (clamped to 10s–1h) |
+| `maxCommandLength` | `20000` | commands longer than this are not analyzed (clamped to 200–100000) |
+
+`rules.json` carries a `"$schema"` pointer to `rules.schema.json`, so editors validate as you type. Config problems (bad JSON, unknown keys, non-compiling patterns, wrong types) are reported to you at session start.
+
+## The `/guard` command
+
+```
+/guard status                 enabled state, rule count, config layers, config problems
+/guard list                   every rule: id, severity, label, matcher
+/guard check "rm -rf build"   dry run: which rule matches and why
+/guard explain <rule-id>      what a rule matches and why
+/guard add <id> "<pattern>"   add a rule
+/guard remove <rule-id>       remove a rule
+/guard update <rule-id> "<pattern>"   replace a rule's pattern
+/guard reset                  restore the built-in defaults
+/guard on | off               enable/disable the guard
+/guard reload                 reload config from disk
+```
+
+Edits write the package layer only, so your user and project layers are never overwritten.
 
 ## Architecture
 
@@ -118,35 +184,37 @@ Patterns can be specified as:
 LLM calls bash tool
         │
         ▼
-  tool_call event fires
+  tool_call event fires ──► guard disabled (--no-guard / enabled:false)? ──► run command
         │
         ▼
-  Command checked against patterns
+  command parsed + matched against rules
+        │
+   no match ──► run command
+        │
+      match ──► no UI? ──► block (reason names the rule)
         │
         ▼
-  Dangerous? ───No──→ Let it run
+  overlay dialog (5 options, countdown)
         │
-       Yes
-        │
-        ▼
-  Show overlay dialog
-        │
-   ┌────┼────┬──────────┐
-   Yes   No  Custom
-   │      │     │
-   ▼      ▼     ▼
- Run     Block  Input dialog
- command  cmd    "What do
-               you want
-               to do
-               instead?"
-                   │
-                   ▼
-            Block original,
-            send context +
-            user intent to LLM
+  ┌─────┴───────────┬──────────────┬───────────┐
+  Allow          Allow rule       Edit        Block / Custom
+  (exact)        (session)        │           │
+  │               │               ▼           ▼
+ run            run          re-check     block + (custom)
+                               │          sendMessage to LLM
+                          clean? run : block
 ```
+
+Caching is per session: allowed commands, blocked commands and allowed rule ids are cleared on `session_start`.
+
+## Testing
+
+```bash
+node --test tests/matchCommand.test.ts
+```
+
+The test suite uses Node's built-in test runner and `node:assert` — no test framework is installed, and there is no build step (pi loads the TypeScript through jiti, which erases types).
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).

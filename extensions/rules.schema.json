@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2022-12/schema",
+  "$id": "https://github.com/shreyashp77/pi-command-guard/extensions/rules.schema.json",
+  "title": "pi-command-guard configuration",
+  "description": "Rule overrides merged over the 22 built-in command-guard rules. Layers, lowest precedence first: <agent-dir>/command-guard/rules.json, .pi/command-guard/rules.json, extensions/rules.json.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Pointer to this schema for editor validation."
+    },
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Master switch. When false the guard lets every command through."
+    },
+    "addRules": {
+      "type": "array",
+      "description": "Extra rules appended after the built-ins.",
+      "items": { "$ref": "#/definitions/rule" }
+    },
+    "removeRules": {
+      "type": "array",
+      "description": "Rule ids to drop. Legacy positional ids (default-0 … default-21) are still accepted.",
+      "items": { "type": "string" }
+    },
+    "updateRules": {
+      "type": "array",
+      "description": "Patches applied to existing rules by id.",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "severity": { "enum": ["critical", "high", "medium"] },
+          "explanation": { "type": "string" },
+          "pattern": { "type": "string" },
+          "match": { "$ref": "#/definitions/argvMatch" },
+          "except": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "rule": {
+      "type": "object",
+      "required": ["label", "explanation"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable id. If omitted the guard assigns custom-N."
+        },
+        "label": { "type": "string" },
+        "severity": { "enum": ["critical", "high", "medium"] },
+        "explanation": { "type": "string" },
+        "pattern": {
+          "type": "string",
+          "description": "Regex source, or a /source/flags literal. A pattern that fails to compile never matches."
+        },
+        "match": { "$ref": "#/definitions/argvMatch" },
+        "except": {
+          "type": "array",
+          "description": "Negative context: if any of these match, the rule does not fire.",
+          "items": { "type": "string" }
+        }
+      },
+        "anyOf": [{ "required": ["pattern"] }, { "required": ["match"] }]
+    },
+    "argvMatch": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "description": "Command name matched after unwrapping sudo/env/time wrappers and skipping NAME=value assignments."
+        },
+        "flagsAllOf": { "type": "array", "items": { "type": "string" }, "description": "Every listed flag must be present." },
+        "flagsAnyOf": { "type": "array", "items": { "type": "string" }, "description": "At least one listed flag must be present." },
+        "argAnyOf": { "type": "array", "items": { "type": "string" }, "description": "At least one argument must match (regex source)." }
+      }
+    }
+  }
+}

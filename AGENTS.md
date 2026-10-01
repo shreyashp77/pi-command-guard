@@ -8,7 +8,7 @@
 
 ## What this is
 
-`pi-command-guard` is a [pi](https://pi.dev) extension that intercepts potentially dangerous `bash` tool calls made by the LLM and prompts the user for a three-way decision (Allow, Block, or Custom Instructions) before the command executes. It ships 14 built-in detection rules, supports session-aware caching to avoid repeated prompts, and exposes a configurable `rules.json` for adding, removing, or modifying rules. The project is written in TypeScript and depends on `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`.
+`pi-command-guard` is a [pi](https://pi.dev) extension that intercepts potentially dangerous `bash` tool calls made by the LLM and prompts the user for a decision before the command executes. It ships 23 built-in detection rules with an argv-aware matching engine (segments, wrapper unwrapping, flag-token matching), session-aware caching, a five-way decision dialog, and a layered JSON configuration validated against a bundled JSON Schema. The project is written in TypeScript and depends on `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`.
 
 ---
 
@@ -16,7 +16,9 @@
 
 This is a pi extension, not a standalone application. The single execution entry point is:
 
-- **`extensions/index.ts`** — The default-exported function registered with pi's extension API (`pi.on("tool_call", ...)`). pi discovers and loads this module when it encounters the extension package. Control flow: pi fires a `tool_call` event → the extension's handler intercepts it → if the command matches a dangerous pattern, a guard dialog is rendered via the TUI layer → the user's choice is returned to pi, which either allows the command to run, blocks it, or injects custom context for the LLM.
+- **`extensions/index.ts`** — The default-exported function registered with pi's extension API (`pi.on("tool_call", ...)`). pi discovers and loads this module when it encounters the extension package. Control flow: pi fires a `tool_call` event → the extension's handler intercepts it → the command is matched against the rule set → if a rule matches, a guard dialog is rendered via the TUI layer → the user's choice is returned to pi, which allows the command, replaces it (edit), blocks it, or injects custom context for the LLM.
+
+Supporting registration points inside the same factory: `pi.registerCommand("guard", …)` (delegates to `extensions/commands.ts`), `pi.registerFlag("no-guard", …)`, `pi.registerMessageRenderer("command-guard", …)`, and `pi.on("session_start", …)`.
 
 No CLI entry points, background workers, scheduled jobs, or other entry points exist.
 
@@ -26,10 +28,19 @@ No CLI entry points, background workers, scheduled jobs, or other entry points e
 
 The `package.json` defines no `scripts` field. The following commands are therefore **not** provided by the project:
 
-- No build command (TypeScript is not compiled; pi loads `.ts` files directly or expects the package to be pre-built by the consumer).
+- No build command. pi loads `extensions/index.ts` through jiti, which strips TypeScript types without typechecking them — evidence: `@earendil-works/pi-coding-agent` `dist/core/extensions/loader.js` calls `createJiti(...)` and then `jiti.import(extensionPath, { default: true })`. There is no `tsconfig.json` and no typechecker configured in this repo.
 - No lint or format command.
-- No test command.
 - No publish command.
+
+One command **is** available for verification, added deliberately in Phase 5 (it is not a build step and installs nothing — it uses Node's built-in test runner):
+
+```bash
+node --test tests/matchCommand.test.ts
+```
+
+Ad-hoc syntax checking without adding tooling: `node --experimental-strip-types --check extensions/<file>.ts`.
+
+`package.json` has no `dependencies` field; the only dependency declarations are `peerDependencies` (`@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`, both at wildcard `"*"` ranges). The package declares `"pi": { "extensions": ["./extensions"] }`, `"license": "MIT"`, and `"keywords": ["pi-package", ...]`.
 
 Installation is done via pi's install mechanism:
 
@@ -49,11 +60,12 @@ Or manual clone into the global extensions directory.
 
 ## Required runtime environment
 
-- **pi (`@earendil-works/pi-coding-agent`)** — Required. Provides the `tool_call` event system the extension hooks into, `pi.sendMessage()` for injecting context back to the LLM, and `DynamicBorder` (used in the dialog borders). Without pi, the extension has nothing to attach to.
+- **pi (`@earendil-works/pi-coding-agent`)** — Required. Provides the `tool_call` event system the extension hooks into, `pi.sendMessage()` for injecting context back to the LLM, `ctx.ui.custom()` for the overlay dialogs, `ctx.ui.setStatus()` for the status line, and `DynamicBorder` (used in the dialog borders).
 - **pi TUI (`@earendil-works/pi-tui`)** — Required. The guard dialog renders via TUI components (`Container`, `SelectList`, `Text`). Without a TUI, the overlay cannot be displayed.
+- **Node.js built-in modules** — `patterns.ts` imports `readFileSync`, `writeFileSync`, `existsSync`, `mkdirSync` from `node:fs`; `dirname`, `join` from `node:path`; `fileURLToPath` from `node:url`. These are Node built-ins, so nothing extra must be installed.
 - **Node.js** — Required to execute the TypeScript extension (pi itself provides the runtime).
 
-No databases, Redis, message queues, or external APIs are required.
+No databases, Redis, message queues, or external APIs are required. Filesystem writes happen only when `/guard` writes the package config layer (see `saveConfig()` below). No startup ordering beyond pi loading the extension before any `tool_call` fires.
 
 ---
 
@@ -61,13 +73,20 @@ No databases, Redis, message queues, or external APIs are required.
 
 ```
 ├── extensions/                        # Extension source code
-│   ├── index.ts                       # Main extension entry: event handler, session cache, dialog orchestration
-│   ├── patterns.ts                    # Rule definitions (14 built-in), config loading, regex matching logic
-│   ├── rules.json                     # User-editable config: addRules, removeRules, updateRules (all empty by default)
-│   └── ui.ts                          # Guard dialog UI: renders overlay with command, explanation, and 3-option select list
+│   ├── index.ts                       # Main extension entry: registration, session cache, tool_call orchestration
+│   ├── patterns.ts                    # Rule definitions (23 built-in), config layers, parsing + matching engine
+│   ├── commands.ts                    # /guard subcommands (status, list, check, explain, add, remove, update, reset, reload, on, off, help)
+│   ├── ui.ts                          # Guard dialog + input dialog + info panel + transcript message renderer
+│   ├── rules.json                     # Package config layer (the shipped template; /guard writes here)
+│   └── rules.schema.json              # JSON Schema for all config layers
+├── tests/
+│   └── matchCommand.test.ts           # Table-driven tests for the detection engine (node --test)
+├── plans/                             # Phased enhancement plan + per-phase status/verification logs
 ├── .gitignore                         # Ignores node_modules/
 ├── package.json                       # Package metadata, pi extension declaration, peer dependencies
-└── README.md                          # Installation, usage, and architecture documentation
+├── LICENSE                            # MIT license text
+├── CHANGELOG.md                       # User-visible behaviour per version
+└── README.md                          # Installation, usage, rules, configuration, architecture
 ```
 
 No generated directories, build outputs, or CI configuration files are present.
@@ -76,80 +95,109 @@ No generated directories, build outputs, or CI configuration files are present.
 
 ## Architecture notes that aren't obvious from filenames
 
-**Event interception model.** The extension operates entirely through pi's `tool_call` event. It does not modify the command before execution; instead, it returns `{ block: true, reason: "..." }` to cancel the command, or returns nothing (undefined) to let it pass through. The `{ block: true }` mechanism is the only way to prevent a command from running.
+**Event interception model.** The extension operates through pi's `tool_call` event. It returns `{ block: true, reason: "..." }` to cancel a command, or `undefined` to let it run. The one exception is the edit flow: pi documents `event.input` as mutable, and `index.ts` assigns `event.input.command = trimmed` before returning `undefined`, so a user-typed replacement runs in place of the original.
 
-**Session caching.** A `Map<string, DecisionEntry>` tracks per-session allow/block decisions keyed by `${rule.id}:${command.trim()}`. When a user allows a command, it is cached with `count: 1`. On subsequent matches of the same rule+command, the count increments and the command is allowed silently without prompting. The cache is cleared on `session_start`. This means the cache is ephemeral — it does not persist across pi restarts or session changes.
+**Fail-closed invariant.** The handler returns only `undefined` or `{ block: true, reason }`. Every fall-through (cancelled dialog, timeout, empty replacement, unrecognized decision, `switch` `default:` branch) blocks. Never introduce a path that returns `undefined` for a rule-matched command unless the user explicitly allowed it.
 
-**Non-interactive safety default.** When `ctx.hasUI` is false (e.g., in a headless or JSON-output mode), the extension blocks all dangerous commands by default with the reason `"Command guard: blocked (no UI for confirmation)"`. This is a security-first design decision: if the user cannot see the dialog, the command is denied.
+**Order inside the `tool_call` handler (current).** `isToolCallEventType("bash", event)` filter → empty/whitespace command filter → `matchCommand(command)` → master switches (`isEnabled()` from config, `pi.getFlag("no-guard")`) → `!ctx.hasUI` block → cache lookups → dialog. Matching happens **before** the `!ctx.hasUI` guard, so in print/JSON mode only rule-matched commands are blocked; unmatched commands run. The `!ctx.hasUI` guard is still the security boundary: a matched command never runs when the user cannot see the dialog.
 
-**Custom instructions flow.** When the user selects "Custom Instructions," the extension shows an input dialog, then calls `pi.sendMessage()` with `deliverAs: "followUp"` and `triggerTurn: true`. This injects a formatted message into the LLM conversation that includes the blocked command, the rule explanation, and the user's custom text. The original command is still blocked. The LLM then receives this as a follow-up turn and can suggest a safer alternative.
+**Session caching.** Three pieces of per-session state live inside the `pi` factory closure in `index.ts` (not module-global): `allowedCommands: Map<string, number>` and `blockedCommands: Map<string, number>` keyed by `${rule.id}:${command.trim()}`, plus `allowedRules: Set<string>` of rule ids allowed for the whole session. Unlike the original version, **block decisions are cached and read back**: a command the user blocked earlier in the session is silently blocked again, with a reason naming the rule. The numeric value is a hit count surfaced in the status line. All three are cleared by the `session_start` handler, along with the `stats` counters and `pendingDialogs`.
 
-**Regex matching is first-match-wins.** `matchCommand()` iterates rules in order and returns the first match. The order of the 14 built-in rules matters: for example, a command matching both "Remote code execution via pipe" and "Dangerous eval/source" would only trigger the former since it appears first in the array.
+**Status line.** `updateStatus(ctx)` calls `ctx.ui.setStatus("command-guard", …)` — the setter lives on `ExtensionUIContext` (`ctx.ui`), not on `ExtensionContext`. It is called after every decision, including silent cache hits.
 
-**Config file location.** `rules.json` is resolved relative to the extension file's directory using `fileURLToPath(import.meta.url)`, which means it works both when the extension is installed locally (cloned) and when installed as an npm package (assuming the `.json` is bundled alongside the `.ts`).
+**Dialog countdown.** The timeout lives in the UI component (`ui.ts`), not in `ctx.ui.custom`: pi's dialog API has no timeout option. `createGuardDialog` starts a `setInterval` that resolves `{ choice: "block", timedOut: true }` when it expires; the interval is cleared in `finish()` and in `dispose()`. The duration comes from `dialogTimeoutMs()` (config, clamped 10s–1h, default 120s).
 
-**Cached rules.** Rules are cached in a module-level `cachedRules` variable. The cache is invalidated only when `saveConfig()` is called (which writes to disk and resets the cache). No other mechanism invalidates it. If `rules.json` is edited externally without calling `saveConfig()`, the changes will not take effect until the extension is reloaded.
+**Detection is argv-aware, not regex-only.** `patterns.ts` splits a command into segments on `&&`, `||`, `;`, `|`, newlines; strips comments and quoted string bodies; unwraps wrapper commands (`sudo`, `doas`, `env`, `time`, `nice`, `nohup`, `stdbuf`, `xargs`, `parallel`); skips `NAME=value` assignments; and recurses into `bash -c "…"` bodies. Each rule then matches either on argv (`command` regex + `flagsAllOf`/`flagsAnyOf`/`argAnyOf`) or on a regex over the segment text (`pattern`). Flags are matched as whole tokens, which is why `rm -fr` and `git push -f` are caught without the false positives a `.*` span produced.
 
-**Pattern format flexibility.** The `stringToRegex()` helper accepts both raw regex strings (`"\\brm\\s+-rf\\b"`) and regex literals (`"/\\brm\\s+-rf\\b/g"`). This is used when loading user-defined patterns from `rules.json`.
+**First match wins.** `matchCommand()` iterates rules in order and returns the first match. Rule order therefore decides which label is shown when several rules match (e.g. `sudo rm -rf /` reports `recursive-deletion`, not `privilege-escalation`). The 23 built-in rules are evaluated in array order.
 
-**Dialog is a Promise-based wrapper.** `showGuardDialog()` wraps `ctx.ui.custom()` in a Promise. The TUI component system uses a callback-based API (`done: (result) => void`), and this wrapper converts it to an async/await pattern for the event handler.
+**Rule ids are stable strings.** Built-in ids are written in source (`recursive-deletion`, `git-force-push`, …), so inserting or reordering rules does not move them. Legacy positional ids (`default-0` … `default-13`) are still accepted through `RULE_ID_ALIASES` via `normalizeRuleId()` so old user configs keep working. Custom ids are `custom-23`, `custom-24`, … starting from `defaultRules.length`, unless an entry carries an explicit `id`.
 
-**UI component composition.** The guard dialog (`ui.ts`) composes a `Container` with a `DynamicBorder` (styled with `theme.fg("warning", ...)`) — note that `DynamicBorder` is imported from `@earendil-works/pi-coding-agent`, while `Container`, `SelectList`, `Text`, and `SelectItem` come from `@earendil-works/pi-tui`. The dialog includes a title `Text`, explanation `Text` lines, a command display `Text`, a `SelectList` with three items, a help-text `Text`, and a bottom `DynamicBorder`. The `SelectList` is configured with theme-aware styling for selected prefix, selected text, description, scroll info, and no-match states.
+**Severity is informational.** Rules carry `severity: "critical" | "high" | "medium"`, shown in the dialog and reported by `/guard list`. It does not change prompting policy, so it cannot open a fail-open path.
 
-**No input validation on custom instructions.** The custom instructions text is passed directly to the LLM via `pi.sendMessage()` without sanitization or length limits. This is acceptable since it is user-provided text being forwarded to the LLM, not executed as code.
+**Negative context.** A rule may carry `except: [regex…]`; if any matches the segment, the rule does not fire. This carves safe cases out of a rule without deleting it.
 
-**Error handling in config loading.** If `rules.json` fails to parse, `loadConfig()` logs a warning and returns an empty config `{}`. The extension degrades gracefully to using only the 14 built-in rules. If `saveConfig()` fails, it logs a warning and does not throw.
+**Cached rules.** Rules are cached in a module-level `cachedRules`. The cache is invalidated by `saveConfig()` and by `reloadConfig()` (behind `/guard reload`). External edits to `rules.json` therefore need `/guard reload` (or a session start) to take effect.
+
+**Config layers.** Three layers, lowest precedence first: user `<agent-dir>/command-guard/rules.json` (agent dir = `PI_CODING_AGENT_DIR` or `~/.pi/agent`), project `.pi/command-guard/rules.json` under `process.cwd()`, package `rules.json` next to the extension sources (`LOCAL_CONFIG_PATH`, derived from `fileURLToPath(import.meta.url)`). Arrays concatenate; `updateRules` merge by id; scalars take the last layer that sets them. `/guard` writes **only** the package layer via `localConfig()` — writing the merged config back into one layer duplicated higher-layer rules.
+
+**The shipped `rules.json` deliberately omits `enabled`.** If the package layer set `enabled: true`, it would win over the user and project layers and they could never disable the guard. The default is `?? true` in `isEnabled()`.
+
+**Config validation reports, never throws.** `readConfigLayer()` records human-readable problems in `configProblemsFound` (bad JSON, unknown keys, wrong types, rules with neither `pattern` nor `match`, patterns that do not compile). `session_start` notifies each one via `ctx.ui.notify`; `/guard status` and `/guard reload` list them. A failing layer is skipped, so the extension degrades to the remaining layers plus the built-ins.
+
+**Invalid pattern is never-matching, not match-everything.** `stringToRegex()` warns and returns the `NEVER_MATCH` sentinel (`new RegExp("((?!))")`) when a pattern fails to compile. The original code returned `new RegExp("", "g")`, which matched every command. `patternCompiles()` compiles without that fallback so validation can report the problem.
+
+**No stateful regex flags.** All rule regexes are compiled through `stripStatefulFlags()`, which drops `g` and `y`. Because non-global regexes do not carry `lastIndex` state, `matchCommand()` no longer resets `lastIndex` before `test()`. This is strictly safer under pi's documented parallel tool calls than the previous shared-state-plus-reset approach; do not reintroduce `g`/`y` flags on rule patterns without re-adding a reset.
+
+**Analysis cap.** Commands longer than `maxCommandLength()` (config, clamped 200–100000, default 20000) are not analyzed and therefore not flagged. This bounds catastrophic backtracking; it is not a ReDoS guarantee.
+
+**UI composition.** `ui.ts` composes a `Container` with a `DynamicBorder` (imported from `@earendil-works/pi-coding-agent`) while `Container`, `SelectList`, `Text` come from `@earendil-works/pi-tui`. The dialog shows a title (with a "(N commands awaiting review)" hint driven by `pendingDialogs`), the explanation, the command with the matched fragment highlighted in the warning colour, a `SelectList` with five items, help text, and a countdown footer. `ctx.ui.custom` is called with explicit `{ overlay: true, overlayOptions: { anchor: "center", width: 76, maxHeight: 24 } }`; the redundant `new Promise(...)` wrappers of the original version were removed.
+
+**Custom instructions flow.** Selecting "Custom Instructions" opens a separate `createInputDialog()`, then `pi.sendMessage()` with `deliverAs: "followUp"` and `triggerTurn: true` injects a message containing the blocked command, the rule explanation and the user's text. The command stays blocked. `GuardDialogResult` carries only `{ choice, timedOut? }`; the custom text never travels through the select result.
+
+**`commands.ts` has no default export**, so pi's directory scan skips it (`if (typeof factory !== "function") return undefined;`). It is pulled in as a jiti relative import from `index.ts`. Same for `patterns.ts` and `ui.ts`.
+
+**Message rendering.** `pi.registerMessageRenderer("command-guard", createGuardMessageRenderer())` styles the injected guard message in the transcript; without it the custom message renders unstyled.
 
 ---
 
 ## Environment variables
 
-Not applicable — no environment variables are read at runtime. Configuration is entirely file-based via `rules.json`.
+- **`PI_CODING_AGENT_DIR`** — read in `patterns.ts` (`configLayerPaths()`) to locate the user config layer; falls back to `$HOME/.pi/agent`. `$HOME` is read as a fallback for the same path.
+- No other environment variables are read. Everything else is file-based configuration.
 
 ---
 
 ## Conventions to preserve
 
-**Single-file responsibility.** Each file in `extensions/` has a single, well-defined responsibility: `index.ts` handles event logic and orchestration, `patterns.ts` handles rule definitions and matching, `ui.ts` handles dialog rendering. Future files should follow this separation.
+**Single-file responsibility.** Each file in `extensions/` has one responsibility: `index.ts` event logic and orchestration, `patterns.ts` rule definitions, config and matching, `ui.ts` rendering, `commands.ts` the `/guard` command surface. Future files should follow this separation.
 
-**Default export pattern.** The extension entry point (`index.ts`) uses a default export function that receives `pi: ExtensionAPI`. This is the pi extension convention.
+**Default export pattern.** The extension entry point (`index.ts`) uses a default export function that receives `pi: ExtensionAPI`. Type-only imports come from `@earendil-works/pi-coding-agent` (`import type { ExtensionAPI, ExtensionContext }`), matching pi's own examples.
 
-**Rule ID naming.** Default rules use `default-0` through `default-13`. Custom rules use `custom-N` where N is the next available index after defaults. This naming is consumed by `rules.json`'s `removeRules` and `updateRules` arrays and by the session cache key.
+**Rule ID naming.** Built-in ids are stable strings written in source. Custom ids are `custom-<n>` numbered from `defaultRules.length`. These ids are the key format for `removeRules`/`updateRules`, for `/guard explain`/`remove`/`update`, and for the session cache key.
 
-**Regex global flag reset.** In `matchCommand()`, `rule.pattern.lastIndex = 0` is explicitly set before each `test()` call. This is necessary because global regexes retain `lastIndex` between calls, which would cause subsequent tests to fail or match incorrectly.
+**Three-way decision enum became five-way.** `GuardChoice = "allow" | "allow-rule" | "edit" | "block" | "custom"` in `ui.ts` is the canonical decision type; `index.ts` switches on it and has a `default:` fail-safe. The `SelectList` `value` strings must match these exactly.
 
-**Config file path resolution.** The config path is resolved relative to the extension file using `fileURLToPath(import.meta.url)`, not relative to `process.cwd()`. This ensures the config works regardless of where pi is invoked from.
+**Regex global flag reset — removed, with rationale.** `matchCommand()` no longer sets `rule.pattern.lastIndex = 0` because every rule regex is compiled without `g`/`y` (see `stripStatefulFlags()`). Keep that invariant if you touch pattern compilation; if a stateful flag ever reappears, the reset must come back.
 
-**Three-way decision enum.** The `GuardChoice` type (`"allow" | "block" | "custom"`) is the canonical decision type. Both `index.ts` and `ui.ts` reference it, and the `SelectList` values must match these strings exactly.
+**Config file path resolution.** The package layer is resolved relative to the extension file using `fileURLToPath(import.meta.url)`, not `process.cwd()`; the project layer is intentionally cwd-relative.
 
 ---
 
 ## Guidance for future agents
 
-**`extensions/index.ts`.** This is the most critical file — it orchestrates the entire extension. Modifying the `tool_call` handler requires understanding the return value semantics: `undefined` = let command run, `{ block: true, reason }` = cancel command. Do not return other shapes. The session cache (`sessionDecisions` Map) is keyed by `${rule.id}:${command.trim()}` — changing this key format without also updating the cache check will cause duplicate prompts or missed cache hits.
+**`extensions/index.ts`.** The most critical file. The `tool_call` handler returns only `undefined` (run) or `{ block: true, reason }` (cancel); every fall-through blocks. The cache key is `${rule.id}:${command.trim()}` — changing the key format without updating all three lookup sites will cause duplicate prompts or missed hits. Keep the master-switch checks (`isEnabled()`, `pi.getFlag("no-guard") === true`) after matching and before the `!ctx.hasUI` guard.
 
-**`extensions/patterns.ts`.** Adding or modifying rules is safe as long as rule IDs are preserved for existing rules (or updated in `rules.json`). The `cachedRules` module-level variable means rule changes only take effect on extension reload. Do not remove the `lastIndex = 0` reset in `matchCommand()` — it is required for correct global regex behavior.
+**`extensions/patterns.ts`.** Adding or modifying rules is safe because ids are stable. Rule changes take effect on `getRules()`/`reloadConfig()`; the module-level `cachedRules` means an external config edit needs `/guard reload`. Do not reintroduce `g`/`y` flags on rule regexes (see the `lastIndex` note). Keep `stringToRegex()`'s failure mode never-matching (`NEVER_MATCH`) and keep the warning that names the offending rule.
 
-**`extensions/ui.ts`.** The dialog component imports `DynamicBorder` from `@earendil-works/pi-coding-agent` and `Container`, `SelectList`, `Text`, `SelectItem` from `@earendil-works/pi-tui`. Do not change the `SelectList` item values (`"allow"`, `"block"`, `"custom"`) — they are matched against the `GuardChoice` type in `index.ts`. The `done` callback signature is fixed by the pi TUI component contract. The file also exports `createInputDialog()` which renders a simple text input dialog for the "Custom Instructions" flow.
+**`extensions/ui.ts`.** Imports `DynamicBorder` from `@earendil-works/pi-coding-agent` and `Container`, `SelectList`, `Text` from `@earendil-works/pi-tui`. Do not change the `SelectList` item values (`"allow"`, `"allow-rule"`, `"edit"`, `"block"`, `"custom"`) — `index.ts` switches on them. The `done` callback signature is fixed by the pi TUI component contract. The file exports `createGuardDialog()`, `createInputDialog()`, `createInfoPanel()` and `createGuardMessageRenderer()`. Any timer started in a component must be cleared in both `finish()` and `dispose()`.
 
-**`extensions/rules.json`.** This file is user-editable and should remain valid JSON. The three arrays (`addRules`, `removeRules`, `updateRules`) are all optional and default to empty. Adding rules here does not require code changes.
+**`extensions/commands.ts`.** Subcommands are dispatched by a `switch` on the first token; `SUBCOMMANDS` also drives autocomplete, so keep the two in sync. Edits must keep writing only the package layer (`localConfig()`), never the merged config.
 
-**Rule order matters.** The 14 built-in rules are evaluated in array order. If a new rule is added that overlaps with an existing one, the first match wins. Document any new rule's priority relationship to existing rules.
+**`extensions/rules.json` and `extensions/rules.schema.json`.** Both must remain valid JSON. The package layer must not pin `enabled`. The schema is the documentation surface for all layers; update it when adding a config key.
 
-**The `ctx.hasUI` guard is a security boundary.** Never remove or bypass the `!ctx.hasUI` check. It is the fallback that prevents dangerous commands from running when the user cannot see the dialog.
+**`tests/matchCommand.test.ts`.** Table-driven `[command, expectedRuleId]` cases run with `node --test`. Extend the table when changing the engine; do not encode the old regex behaviour as expectations.
 
-**`pi.sendMessage` with `deliverAs: "followUp"`** injects text into the LLM conversation. The format of this message is parsed by the LLM, not by pi. Changing the message format should be tested to ensure the LLM still interprets it correctly.
+**`stringToRegex()`'s failure mode.** It returns `NEVER_MATCH` and warns. Never let it fall back to an empty pattern.
 
-**Do not add build steps.** The project has no `scripts` in `package.json` and no build tooling. If TypeScript compilation is needed in the future, it should be added deliberately with clear justification.
+**`matchCommand()` and shared state.** Rule `RegExp` objects live in the module-level `cachedRules` array and are shared across concurrent `tool_call` handlers (pi documents that tool calls from one assistant message can run in parallel). Non-global regexes with no `lastIndex` reads are safe; anything stateful must be per-call.
+
+**Master switches and the security boundary.** `--no-guard` and `enabled: false` are explicit, user-chosen bypasses. Never remove or bypass the `!ctx.hasUI` check for matched commands: it is what prevents a dangerous command from running when the user cannot see the dialog.
+
+**`pi.sendMessage` with `deliverAs: "followUp"`** injects text into the LLM conversation. The message format is interpreted by the LLM, not pi; re-test after changing it.
+
+**Do not add build steps.** The project has no `scripts` in `package.json` and no build tooling. The only verification command is `node --test tests/matchCommand.test.ts`, which uses Node's built-in runner and installs nothing; adding a real test framework or a compile step would need explicit justification.
 
 ---
 
 ## Deprecated, stale, or unused components
 
-**`saveConfig()` in `patterns.ts` is incomplete.** The function writes to `CONFIG_PATH` but contains a dead-code branch (`if (!existsSync(dir))`) that does nothing. It should call `fs.mkdirSync(dir, { recursive: true })` if the directory does not exist, but currently does not. This function appears unused anywhere in the codebase — no caller invokes `saveConfig()`. It may be intended for future use (e.g., a config editor UI), but is currently dead code.
+**Nothing in `extensions/` is dead code any more.** The original dead-code items were resolved during the enhancement phases: `saveConfig()` is now called by `/guard` (and creates missing directories via `mkdirSync(dir, { recursive: true })`), `CONFIG_DIR` was removed, the unused `ToolCallEvent` import was removed, `MatchResult.matchedText` is a real fragment consumed by the dialog's highlight, and `GuardDialogResult.customInstructions` was dropped in favour of the separate input dialog.
 
-**`readFileSync` and `writeFileSync` are imported in `patterns.ts`** but `writeFileSync` is only used in the incomplete `saveConfig()`. If `saveConfig()` is removed, `writeFileSync` becomes unused.
+**`session_start` handler's `_event` parameter is still unused** (`index.ts`); it is positional — `ctx` is the second parameter pi passes — so it cannot be dropped.
 
-**`rules.json` has all empty arrays.** The default config file ships with `addRules: [], removeRules: [], updateRules: []`. This is intentional and not stale — it serves as the template for user customization.
+**`getRules()` is exported and used** by `index.ts` (session-start warm-up) and `commands.ts`; `reloadConfig()` exists specifically so `/guard reload` can invalidate `cachedRules`.
 
-**No tests, linting, or CI.** The project has no test framework, no lint configuration, no CI workflow files, and no build pipeline. This is not deprecated — it was never added.
+**`plans/` is a working artifact, not shipped code.** It records the phased enhancement plan and per-phase verification logs; keep it updated when changing behaviour, and do not reference it from `package.json`.
+
+**No lint, format, CI, or release tooling.** Never added; version bumps are manual in `package.json` (currently `1.1.0`) with a matching `CHANGELOG.md` entry.
